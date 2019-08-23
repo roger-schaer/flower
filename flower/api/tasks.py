@@ -309,7 +309,7 @@ Get a task result
         result = AsyncResult(taskid)
         if not self.backend_configured(result):
             raise HTTPError(503)
-        response = {'task-id': taskid, 'state': result.state, 'result', result.result}
+        response = {'task-id': taskid, 'state': result.state, 'result': result.result}
 
         if timeout:
             result.get(timeout=timeout, propagate=False)
