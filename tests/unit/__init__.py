@@ -1,7 +1,4 @@
-try:
-    from urllib.parse import urlencode
-except ImportError:
-    from urllib import urlencode
+from urllib.parse import urlencode
 
 import tornado.testing
 from tornado.options import options
@@ -15,13 +12,7 @@ from flower.app import Flower
 from flower.urls import handlers
 from flower.events import Events
 from flower.urls import settings
-from flower import command  # side effect - define options
-
-
-def app_delay(method, *args, **kwargs):
-    future = Future()
-    future.set_result(method(*args, **kwargs))
-    return future
+from flower import command  # noqa: F401 side effect - define options
 
 
 class AsyncHTTPTestCase(tornado.testing.AsyncHTTPTestCase):
@@ -30,7 +21,6 @@ class AsyncHTTPTestCase(tornado.testing.AsyncHTTPTestCase):
         events = Events(capp)
         app = Flower(capp=capp, events=events,
                      options=options, handlers=handlers, **settings)
-        app.delay = lambda method, *args, **kwargs: app_delay(method, *args, **kwargs)
         return app
 
     def get(self, url, **kwargs):

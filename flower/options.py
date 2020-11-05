@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 import types
 
 from tornado.options import define
@@ -49,6 +47,8 @@ define("xheaders", type=bool, default=False,
        help="enable support for the 'X-Real-Ip' and 'X-Scheme' headers.")
 define("auto_refresh", default=True,
        help="refresh dashboards", type=bool)
+define("purge_offline_workers", default=None, type=int,
+       help="time (in seconds) after which offline workers are purged from dashboard")
 define("cookie_secret", type=str, default=None,
        help="secure cookie secret")
 define("conf", default=DEFAULT_CONFIG_FILE,

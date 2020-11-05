@@ -1,6 +1,3 @@
-from __future__ import absolute_import
-from __future__ import with_statement
-
 import time
 import shelve
 import logging
@@ -11,23 +8,26 @@ from functools import partial
 
 import celery
 
-from pkg_resources import parse_version
-
-from tornado.ioloop import PeriodicCallback
 from tornado.ioloop import IOLoop
+from tornado.ioloop import PeriodicCallback
+from tornado.concurrent import run_on_executor
 
 from celery.events import EventReceiver
 from celery.events.state import State
 
 from . import api
 
-try:
-    from collections import Counter
-except ImportError:
-    from .utils.backports.collections import Counter
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
+from prometheus_client import Counter as PrometheusCounter, Histogram
 
 logger = logging.getLogger(__name__)
+
+
+class PrometheusMetrics(object):
+    events = PrometheusCounter('flower_events_total', "Number of events", ['worker', 'type', 'task'])
+    runtime = Histogram('flower_task_runtime_seconds', "Task runtime", ['worker', 'task'])
 
 
 class EventsState(State):
@@ -36,12 +36,24 @@ class EventsState(State):
     def __init__(self, *args, **kwargs):
         super(EventsState, self).__init__(*args, **kwargs)
         self.counter = collections.defaultdict(Counter)
+        self.metrics = PrometheusMetrics()
 
     def event(self, event):
         worker_name = event['hostname']
         event_type = event['type']
 
         self.counter[worker_name][event_type] += 1
+
+        if event_type.startswith('task-'):
+            task_id = event['uuid']
+            task_name = event.get('name', '')
+            if not task_name and task_id in self.tasks:
+                task_name = self.tasks[task_id].name or ''
+            self.metrics.events.labels(worker_name, event_type, task_name).inc()
+
+            runtime = event.get('runtime', 0)
+            if runtime:
+                self.metrics.runtime.labels(worker_name, task_name).observe(runtime)
 
         # Send event to api subscribers (via websockets)
         classname = api.events.getClassName(event_type)
@@ -69,11 +81,6 @@ class Events(threading.Thread):
         self.enable_events = enable_events
         self.state = None
 
-        if self.persistent and parse_version(celery.__version__) < parse_version("3.0.15"):
-            logger.warning('Persistent mode is available with '
-                           'Celery 3.0.15 and later')
-            self.persistent = False
-
         if self.persistent:
             logger.debug("Loading state from '%s'...", self.db)
             state = shelve.open(self.db)
@@ -89,11 +96,15 @@ class Events(threading.Thread):
 
     def start(self):
         threading.Thread.start(self)
-        # Celery versions prior to 2 don't support enable_events
-        if self.enable_events and celery.VERSION[0] > 2:
+        if self.enable_events:
+            logger.debug("Starting enable events timer...")
             self.timer.start()
 
     def stop(self):
+        if self.enable_events:
+            logger.debug("Stopping enable events timer...")
+            self.timer.stop()
+
         if self.persistent:
             logger.debug("Saving state to '%s'...", self.db)
             state = shelve.open(self.db)
@@ -111,8 +122,8 @@ class Events(threading.Thread):
                                          handlers={"*": self.on_event},
                                          app=self.capp)
                     try_interval = 1
+                    logger.debug("Capturing events...")
                     recv.capture(limit=None, timeout=None, wakeup=True)
-
             except (KeyboardInterrupt, SystemExit):
                 try:
                     import _thread as thread
@@ -129,10 +140,7 @@ class Events(threading.Thread):
     def on_enable_events(self):
         # Periodically enable events for workers
         # launched after flower
-        try:
-            self.capp.control.enable_events()
-        except Exception as e:
-            logger.debug("Failed to enable events: '%s'", e)
+        self.io_loop.run_in_executor(None, self.capp.control.enable_events)
 
     def on_event(self, event):
         # Call EventsState.event in ioloop thread to avoid synchronization
